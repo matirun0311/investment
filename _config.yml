@@ -1,0 +1,33 @@
+title: 週刊・はじめての株式投資
+description: >-
+  株式投資の初学者向けに、毎週月曜日に1本ずつ「基礎から実践まで」を順番に学べる記事を配信します。
+lang: ja
+timezone: Asia/Tokyo
+baseurl: "/investment"
+url: ""
+
+theme: minima
+plugins:
+  - jekyll-feed
+  - jekyll-seo-tag
+
+# 公開日が未来の記事はビルドに含めない。
+# 毎週月曜の定期ビルドで、その日付になった記事が自動的に公開される。
+future: false
+
+permalink: /:year/:month/:day/:title/
+
+feed:
+  path: feed.xml
+
+header_pages:
+  - curriculum.md
+  - about.md
+
+exclude:
+  - README.md
+  - templates/
+  - scripts/
+  - Gemfile
+  - Gemfile.lock
+  - vendor/
