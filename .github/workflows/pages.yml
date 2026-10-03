@@ -7,6 +7,11 @@ on:
     # 毎週月曜 07:00 JST (= 日曜 22:00 UTC)。その日付の記事がここで公開される。
     - cron: "0 22 * * 0"
   workflow_dispatch:
+    inputs:
+      send_latest:
+        description: "最新の公開済み記事を自分のGmailに送る（送信テスト用）"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -41,6 +46,38 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+
+  # 公開日を迎えた記事を、自分のGmail宛てにメールで送る
+  email:
+    needs: deploy
+    if: github.event_name == 'schedule' || inputs.send_latest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install markdown
+      - name: Send article email
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          SITE_URL: ${{ needs.deploy.outputs.page_url }}
+          SEND_LATEST: ${{ inputs.send_latest }}
+        run: |
+          if [ -z "$GMAIL_ADDRESS" ] || [ -z "$GMAIL_APP_PASSWORD" ]; then
+            echo "::warning::GMAIL_ADDRESS / GMAIL_APP_PASSWORD が未設定のため、メール送信をスキップしました"
+            exit 0
+          fi
+          if [ "$SEND_LATEST" = "true" ]; then
+            python3 scripts/send_email.py --latest
+          else
+            python3 scripts/send_email.py
+          fi
