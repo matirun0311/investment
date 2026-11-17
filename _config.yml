@@ -22,7 +22,20 @@ feed:
 
 header_pages:
   - curriculum.md
+  - basics.md
   - about.md
+
+# 「90日でわかる はじめての株」シリーズ（毎日1回配信・全90回）
+collections:
+  basics:
+    output: true
+    permalink: /basics/:title/
+
+defaults:
+  - scope:
+      type: basics
+    values:
+      layout: post
 
 exclude:
   - README.md

@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """公開日を迎えた記事を、自分の Gmail 宛てにメールで送る。
 
-GitHub Actions の週次ワークフローから実行される。送信元・宛先はどちらも
+対象は2つのシリーズ:
+  - _posts/  週刊・はじめての株式投資（毎週月曜）
+  - _basics/ 90日でわかる はじめての株（毎日・全90回）
+同じ日に両方の記事があれば、それぞれ1通ずつ送る。
+
+GitHub Actions の毎日のワークフローから実行される。送信元・宛先はどちらも
 環境変数 GMAIL_ADDRESS（Gmail のアプリパスワードは GMAIL_APP_PASSWORD）。
 
 使い方:
-    python3 scripts/send_email.py                # 今日（JST）が公開日の記事を送る
+    python3 scripts/send_email.py                # 今日（JST）が公開日の記事をすべて送る
     python3 scripts/send_email.py --latest       # 今日以前で最新の記事を送る（送信テスト用）
     python3 scripts/send_email.py --date 2026-10-05 --dry-run   # 送らずに .eml を書き出す
 """
@@ -22,9 +27,14 @@ from zoneinfo import ZoneInfo
 import markdown
 
 ROOT = Path(__file__).resolve().parent.parent
-POSTS = ROOT / "_posts"
 POST_NAME = re.compile(r"^(\d{4}-\d{2}-\d{2})-(.+)\.md$")
 SITE_TITLE = "週刊・はじめての株式投資"
+
+# (ディレクトリ, メール件名のシリーズ名, サイト上のURLの作り方)
+SERIES = [
+    (ROOT / "_posts", SITE_TITLE, lambda d, slug: f"{d:%Y/%m/%d}/{slug}/"),
+    (ROOT / "_basics", "90日でわかる はじめての株", lambda d, slug: f"basics/{slug}/"),
+]
 
 STYLE = """
 body { font-family: -apple-system, 'Hiragino Sans', 'Noto Sans JP', sans-serif; line-height: 1.8; color: #222; max-width: 680px; margin: 0 auto; padding: 16px; }
@@ -37,37 +47,40 @@ blockquote { color: #555; border-left: 3px solid #ddd; margin: 0; padding-left: 
 
 def load_posts():
     posts = []
-    for path in sorted(POSTS.glob("*.md")):
-        m = POST_NAME.match(path.name)
-        if not m:
-            continue
-        text = path.read_text(encoding="utf-8")
-        _, front, body = text.split("---", 2)
-        meta = dict(
-            (k.strip(), v.strip().strip('"'))
-            for k, v in (line.split(":", 1) for line in front.strip().splitlines() if ":" in line)
-        )
-        posts.append({
-            "date": datetime.date.fromisoformat(m.group(1)),
-            "slug": m.group(2),
-            "title": meta["title"],
-            "body": body.strip(),
-        })
-    return posts
+    for directory, series, url_path in SERIES:
+        for path in sorted(directory.glob("*.md")):
+            m = POST_NAME.match(path.name)
+            if not m:
+                continue
+            text = path.read_text(encoding="utf-8")
+            _, front, body = text.split("---", 2)
+            meta = dict(
+                (k.strip(), v.strip().strip('"'))
+                for k, v in (line.split(":", 1) for line in front.strip().splitlines() if ":" in line)
+            )
+            date = datetime.date.fromisoformat(m.group(1))
+            posts.append({
+                "date": date,
+                "slug": m.group(2),
+                "series": series,
+                "url_path": url_path(date, m.group(2)),
+                "title": meta["title"],
+                "body": body.strip(),
+            })
+    return sorted(posts, key=lambda p: p["date"])
 
 
-def pick_post(posts, date, latest):
+def pick_posts(posts, date, latest):
     if latest:
         candidates = [p for p in posts if p["date"] <= date]
-        return candidates[-1] if candidates else None
-    return next((p for p in posts if p["date"] == date), None)
+        return candidates[-1:]
+    return [p for p in posts if p["date"] == date]
 
 
 def build_message(post, address, site_url):
     url = None
     if site_url:
-        d = post["date"]
-        url = f"{site_url.rstrip('/')}/{d:%Y/%m/%d}/{post['slug']}/"
+        url = f"{site_url.rstrip('/')}/{post['url_path']}"
 
     html_body = markdown.markdown(post["body"], extensions=["tables"])
     link_html = f'<p class="link">サイトで読む: <a href="{url}">{url}</a></p>' if url else ""
@@ -80,8 +93,8 @@ def build_message(post, address, site_url):
         text += f"\nサイトで読む: {url}\n"
 
     msg = EmailMessage()
-    msg["Subject"] = f"【{SITE_TITLE}】{post['title']}"
-    msg["From"] = f"{SITE_TITLE} <{address}>"
+    msg["Subject"] = f"【{post['series']}】{post['title']}"
+    msg["From"] = f"{post['series']} <{address}>"
     msg["To"] = address
     msg.set_content(text)
     msg.add_alternative(html, subtype="html")
@@ -97,20 +110,22 @@ def main():
 
     date = (datetime.date.fromisoformat(args.date) if args.date
             else datetime.datetime.now(ZoneInfo("Asia/Tokyo")).date())
-    post = pick_post(load_posts(), date, args.latest)
-    if post is None:
+    posts = pick_posts(load_posts(), date, args.latest)
+    if not posts:
         print(f"{date} に送る記事はありません。")
         return
 
     address = os.environ.get("GMAIL_ADDRESS", "me@example.com" if args.dry_run else "")
     if not address:
         sys.exit("環境変数 GMAIL_ADDRESS が設定されていません")
-    msg = build_message(post, address, os.environ.get("SITE_URL", ""))
+    messages = [build_message(p, address, os.environ.get("SITE_URL", "")) for p in posts]
 
     if args.dry_run:
-        out = Path(os.environ.get("EML_OUT", f"{post['date']}-{post['slug']}.eml"))
-        out.write_bytes(bytes(msg))
-        print(f"書き出しました: {out}（件名: {msg['Subject']}）")
+        out_dir = Path(os.environ.get("EML_OUT_DIR", "."))
+        for post, msg in zip(posts, messages):
+            out = out_dir / f"{post['date']}-{post['slug']}.eml"
+            out.write_bytes(bytes(msg))
+            print(f"書き出しました: {out}（件名: {msg['Subject']}）")
         return
 
     password = os.environ.get("GMAIL_APP_PASSWORD")
@@ -118,8 +133,9 @@ def main():
         sys.exit("環境変数 GMAIL_APP_PASSWORD が設定されていません")
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
         smtp.login(address, password)
-        smtp.send_message(msg)
-    print(f"送信しました: {msg['Subject']}")
+        for msg in messages:
+            smtp.send_message(msg)
+            print(f"送信しました: {msg['Subject']}")
 
 
 if __name__ == "__main__":
